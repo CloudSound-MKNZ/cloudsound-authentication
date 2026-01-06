@@ -1,32 +1,55 @@
 """Authentication API endpoints."""
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel, EmailStr, Field, SecretStr
 from typing import Optional
-from cloudsound_shared.jwt_handler import create_access_token, create_refresh_token, verify_token, TokenData
-from cloudsound_shared.config.settings import app_settings
-import structlog
 
-logger = structlog.get_logger(__name__)
+from cloudsound_shared.jwt_handler import (
+    create_access_token,
+    create_refresh_token,
+    verify_token,
+    TokenData,
+)
+from cloudsound_shared.config.settings import app_settings
+from cloudsound_shared.logging import get_logger
+from cloudsound_shared.exceptions import (
+    AuthenticationError,
+    TokenInvalidError,
+    CredentialsInvalidError,
+)
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{app_settings.api_prefix}/auth/login")
 
+
 class TokenResponse(BaseModel):
     """Token response model."""
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
+    access_token: str = Field(..., description="JWT access token")
+    refresh_token: str = Field(..., description="JWT refresh token")
+    token_type: str = Field(default="bearer", description="Token type")
+    expires_in: int = Field(
+        default=3600,
+        description="Token expiration time in seconds",
+    )
+
 
 class LoginRequest(BaseModel):
-    """Login request model."""
-    email: EmailStr
-    password: str
+    """Login request model with validation."""
+    email: EmailStr = Field(..., description="User email address")
+    password: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="User password",
+    )
+
 
 class RefreshTokenRequest(BaseModel):
     """Refresh token request model."""
-    refresh_token: str
+    refresh_token: str = Field(..., min_length=10, description="JWT refresh token")
 
 @router.post("/login", response_model=TokenResponse)
 async def login(request: LoginRequest) -> TokenResponse:
@@ -66,9 +89,9 @@ async def refresh_token(request: RefreshTokenRequest) -> TokenResponse:
     token_data = verify_token(request.refresh_token)
     
     if not token_data or token_data.role != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
+        logger.warning("invalid_refresh_token")
+        raise TokenInvalidError(
+            message="Invalid or expired refresh token",
         )
     
     # Create new access token
@@ -80,22 +103,24 @@ async def refresh_token(request: RefreshTokenRequest) -> TokenResponse:
     }
     
     access_token = create_access_token(user_data)
-    refresh_token = create_refresh_token(user_data)  # New refresh token
+    new_refresh_token = create_refresh_token(user_data)  # New refresh token
+    
+    logger.info("token_refreshed", user_id=token_data.user_id)
     
     return TokenResponse(
         access_token=access_token,
-        refresh_token=refresh_token,
+        refresh_token=new_refresh_token,
     )
+
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
     """Dependency to get current authenticated user."""
     token_data = verify_token(token)
     
     if token_data is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
+        raise AuthenticationError(
+            message="Could not validate credentials",
+            details={"header": "Authorization"},
         )
     
     return token_data
