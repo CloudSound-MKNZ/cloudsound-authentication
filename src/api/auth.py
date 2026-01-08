@@ -51,6 +51,10 @@ class RefreshTokenRequest(BaseModel):
     """Refresh token request model."""
     refresh_token: str = Field(..., min_length=10, description="JWT refresh token")
 
+# Default tenant ID - used for development and single-tenant deployments
+DEFAULT_TENANT_ID = "aaaaaaaa-0000-0000-0000-000000000001"
+
+
 @router.post("/login", response_model=TokenResponse)
 async def login(request: LoginRequest) -> TokenResponse:
     """
@@ -72,11 +76,13 @@ async def login(request: LoginRequest) -> TokenResponse:
         "user_id": "user-123",  # Get from database
         "email": request.email,
         "role": user_role,  # Get from database
-        "tenant_id": None,  # Get from database for multitenancy
+        "tenant_id": DEFAULT_TENANT_ID,  # Default tenant for row-level multitenancy
     }
     
     access_token = create_access_token(user_data)
     refresh_token = create_refresh_token(user_data)
+    
+    logger.info("login_success", email=request.email, tenant_id=DEFAULT_TENANT_ID)
     
     return TokenResponse(
         access_token=access_token,
